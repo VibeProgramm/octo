@@ -12,7 +12,7 @@ use http_body_util::BodyExt;
 use octo_core::family::abilities::{Abilities, Preset};
 use octo_core::family::quality::StreamQuality;
 use octo_core::models::domain::Song;
-use octo_core::settings::{AppSettings, PrefetchSettings};
+use octo_core::settings::{AppSettings, PrefetchScope, PrefetchSettings};
 use wiremock::matchers::any;
 use wiremock::{Mock, MockServer};
 
@@ -134,6 +134,7 @@ async fn another_app_gets_the_preview_unless_wait_for_lossless_is_on() {
 async fn cache_on_play_serves_flac_that_arrives_within_the_wait() {
     let w = world(|s| {
         s.prefetch.cache_on_play = true;
+        s.prefetch.scope = PrefetchScope::All;
         s.prefetch.on_play_wait_seconds = 1;
     })
     .await;
@@ -150,6 +151,7 @@ async fn cache_on_play_serves_flac_that_arrives_within_the_wait() {
 async fn cache_on_play_times_out_to_preview_and_late_flac_does_not_change_a_seek() {
     let w = world(|s| {
         s.prefetch.cache_on_play = true;
+        s.prefetch.scope = PrefetchScope::All;
         s.prefetch.on_play_wait_seconds = 1;
     })
     .await;
@@ -163,6 +165,21 @@ async fn cache_on_play_times_out_to_preview_and_late_flac_does_not_change_a_seek
     assert!(is_preview(&seek));
     assert!(w.state.download_history.get_recent(10).is_empty());
     assert!(is_flac(&w.play("Octo", None).await));
+}
+
+#[tokio::test]
+async fn radio_only_cache_does_not_delay_an_ordinary_play() {
+    let w = world(|s| {
+        s.prefetch.cache_on_play = true;
+        s.prefetch.scope = PrefetchScope::RadioOnly;
+        s.prefetch.on_play_wait_seconds = 30;
+    })
+    .await;
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(3), w.play("Octo", None))
+        .await
+        .expect("a non-radio play must not wait for a radio-only cache");
+    assert!(is_preview(&reply));
+    assert!(w.state.prefetch.queued_ids().is_empty());
 }
 
 #[tokio::test]
