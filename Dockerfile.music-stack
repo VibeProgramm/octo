@@ -2,9 +2,7 @@ FROM rust:1.99-bookworm AS build
 WORKDIR /src
 ENV CARGO_BUILD_JOBS=2 CARGO_PROFILE_RELEASE_LTO=off CARGO_PROFILE_RELEASE_DEBUG=0
 COPY . .
-RUN cargo test --release --locked --package octo --lib services::prefetch::prefetch_service_tests
-RUN cargo test --release --locked --package octo --lib controllers::subsonic::prefetch_stream_tests
-RUN cargo build --release --locked --package octo --bin octo
+RUN sh scripts/build-music-stack.sh
 FROM ghcr.io/winters27/octo@sha256:edaa2c3cc8796bfcb33026b43406f315724d23ca7e4e0fbf3d6d49615f9d27ee
 COPY --from=build /src/target/release/octo /app/octo
 LABEL local.music-stack.patch="cache-flac-on-play-v2"
