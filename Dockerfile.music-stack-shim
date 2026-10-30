@@ -1,0 +1,3 @@
+FROM ghcr.io/winters27/octo-yt-dlp-shim@sha256:37f20644a29d81646ed89a452ee0488231b0d1dd8ad911aa3cf8cdc4f2678004
+COPY yt-dlp-shim/app.py /app/app.py
+LABEL local.music-stack.patch="youtube-recording-exclusions-v1"
