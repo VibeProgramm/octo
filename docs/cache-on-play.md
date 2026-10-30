@@ -34,10 +34,11 @@ The ordinary explicit-save action remains the way to retain a file in the librar
 ## Verification
 
 ```sh
-cargo test --release --locked -p octo --lib services::prefetch::prefetch_service_tests
-cargo test --release --locked -p octo --lib controllers::subsonic::prefetch_stream_tests
+sh scripts/build-music-stack.sh
 ```
 
 The tests cover cold-start serial bootstrap, refused destinations, a Play without a
 saved queue, cached arrival before the timeout, timeout fallback and source-stable seeks.
 `Dockerfile.music-stack` builds the patch on the pinned 2026.10.28 runtime image.
+The script retains release optimization and uses 32 codegen units for the large
+test crate; the production binary uses the project's default codegen units.
