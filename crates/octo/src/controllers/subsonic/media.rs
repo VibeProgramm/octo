@@ -307,7 +307,7 @@ async fn play_in_octo_app(
         .filter(|_| state.settings.current().prefetch.enabled)
         .filter(|_| state.prefetch.may_keep_copies(play.who, play.caller))
         .map(|path| path.to_string_lossy().into_owned());
-    let ready = match &ahead {
+    let mut ready = match &ahead {
         Some(path) => Some(path.clone()),
         None => state
             .local_library
@@ -316,6 +316,33 @@ async fn play_in_octo_app(
             .filter(|path| Path::new(path).is_file()),
     };
     let range = call.header("Range");
+    let prefetch = state.settings.current().prefetch.clone();
+    if ready.is_none()
+        && state.prefetch.caches_on_play(play.id)
+        && prefetch.on_play_wait_seconds > 0
+        && state.prefetch.may_keep_copies(play.who, play.caller)
+        && is_first_byte_request(call.method().as_str(), range.as_deref())
+    {
+        // Only the wait belongs to this HTTP request. on_playing queues a cache job owned
+        // by the worker, so timeout/disconnect cannot turn it into a permanent acquisition
+        // or cancel it. Choose the play's immutable source only after this bounded wait.
+        let wait = Duration::from_secs(prefetch.on_play_wait_seconds.clamp(0, 30) as u64);
+        let _ = tokio::time::timeout(wait, async {
+            state.prefetch.on_playing(play.who, play.id, play.caller).await;
+            loop {
+                if state.prefetch.store().is_ready(play.provider, play.external_id) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        ready = state
+            .prefetch
+            .store()
+            .ready(play.provider, play.external_id)
+            .map(|path| path.to_string_lossy().into_owned());
+    }
     let length = state
         .external_id_registry
         .lookup(play.external_id)

@@ -70,6 +70,20 @@ impl DownloadConcurrency {
         self.state.current()
     }
 
+    /// A single cache download may establish the job-folder proof after startup.
+    /// It still takes the serial transfer gate; a refused destination never qualifies.
+    pub fn can_bootstrap_prefetch(&self) -> bool {
+        !self.state.proven.load(Ordering::SeqCst)
+            && self.state.refused.get().is_none()
+            && self
+                .state
+                .settings
+                .current()
+                .soulseek
+                .effective_parallel_downloads()
+                > 1
+    }
+
     /// Why Current is what it is, in words for the dashboard.
     pub fn why(&self) -> String {
         if let Some(refused) = self.state.refused.get() {

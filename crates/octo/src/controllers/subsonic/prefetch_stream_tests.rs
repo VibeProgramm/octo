@@ -131,6 +131,41 @@ async fn another_app_gets_the_preview_unless_wait_for_lossless_is_on() {
 }
 
 #[tokio::test]
+async fn cache_on_play_serves_flac_that_arrives_within_the_wait() {
+    let w = world(|s| {
+        s.prefetch.cache_on_play = true;
+        s.prefetch.on_play_wait_seconds = 1;
+    })
+    .await;
+    let (reply, _) = tokio::join!(w.play("Octo", None), async {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        w.land();
+    });
+    assert!(is_flac(&reply));
+    assert!(w.streams.stream_calls().is_empty());
+    assert!(w.state.download_history.get_recent(10).is_empty());
+}
+
+#[tokio::test]
+async fn cache_on_play_times_out_to_preview_and_late_flac_does_not_change_a_seek() {
+    let w = world(|s| {
+        s.prefetch.cache_on_play = true;
+        s.prefetch.on_play_wait_seconds = 1;
+    })
+    .await;
+    let began = std::time::Instant::now();
+    let reply = w.play("Octo", None).await;
+    assert!(began.elapsed() >= std::time::Duration::from_millis(950));
+    assert!(began.elapsed() < std::time::Duration::from_secs(3));
+    assert!(is_preview(&reply));
+    w.land();
+    let seek = w.play("Octo", Some("bytes=2-")).await;
+    assert!(is_preview(&seek));
+    assert!(w.state.download_history.get_recent(10).is_empty());
+    assert!(is_flac(&w.play("Octo", None).await));
+}
+
+#[tokio::test]
 async fn prefetch_off_leaves_an_octo_app_on_the_preview() {
     let w = world(|s| s.prefetch.enabled = false).await;
     w.land();

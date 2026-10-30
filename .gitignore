@@ -106,4 +106,5 @@ parity/
 *.md
 !README.md
 !docs/family.md
+!docs/cache-on-play.md
 !scripts/admin-icons/SOURCES.md

@@ -148,6 +148,7 @@ struct World {
     folder: tempfile::TempDir,
     ids: Vec<String>,
     now: Arc<Mutex<DateTime<Utc>>>,
+    concurrency: Arc<DownloadConcurrency>,
 }
 
 fn world(change: impl FnOnce(&mut AppSettings)) -> World {
@@ -156,6 +157,14 @@ fn world(change: impl FnOnce(&mut AppSettings)) -> World {
 
 /// The service over the state's own parts, with downloads three at a time and this Soulseek link.
 fn world_with(change: impl FnOnce(&mut AppSettings), soulseek: Option<Arc<dyn ISoulseekLink>>) -> World {
+    world_with_proof(change, soulseek, true)
+}
+
+fn world_with_proof(
+    change: impl FnOnce(&mut AppSettings),
+    soulseek: Option<Arc<dyn ISoulseekLink>>,
+    proven: bool,
+) -> World {
     let folder = tempfile::tempdir().expect("a temp dir");
     let mut settings = AppSettings {
         prefetch: PrefetchSettings {
@@ -191,7 +200,9 @@ fn world_with(change: impl FnOnce(&mut AppSettings), soulseek: Option<Arc<dyn IS
         })
         .collect();
     let concurrency = Arc::new(DownloadConcurrency::new(state.settings.clone()));
-    concurrency.prove();
+    if proven {
+        concurrency.prove();
+    }
     let now = Arc::new(Mutex::new(Utc::now()));
     let clock_now = Arc::clone(&now);
     let clock = Clock::new(move || *clock_now.lock());
@@ -210,7 +221,7 @@ fn world_with(change: impl FnOnce(&mut AppSettings), soulseek: Option<Arc<dyn IS
         radio_queues: state.radio_queues.clone(),
         write_gate: state.family_write_gate.clone(),
         library: state.local_library.clone(),
-        concurrency: Some(concurrency),
+        concurrency: Some(concurrency.clone()),
         names: Some(state.external_id_registry.clone()),
         soulseek,
         clock,
@@ -222,6 +233,7 @@ fn world_with(change: impl FnOnce(&mut AppSettings), soulseek: Option<Arc<dyn IS
         folder,
         ids,
         now,
+        concurrency,
     }
 }
 
@@ -286,6 +298,25 @@ async fn songs_that_left_the_window_are_dropped_before_they_start() {
 }
 
 #[tokio::test]
+async fn play_alone_caches_the_current_song_without_a_saved_queue_or_permanent_download() {
+    let w = world_with_proof(|s| s.prefetch.cache_on_play = true, None, false);
+    w.service.on_playing("alice", &w.ids[0], None).await;
+    w.run_jobs().await;
+    assert_eq!(w.asked(), w.ids_of(&[0]));
+    let path = w
+        .service
+        .store()
+        .ready("soulseek", &w.ids[0])
+        .expect("cached FLAC");
+    assert!(path.starts_with(w.folder.path()));
+    assert!(w.state.download_history.get_recent(10).is_empty());
+    // Repeated play/scrobble notifications reuse the cached copy.
+    w.service.on_playing("alice", &w.ids[0], None).await;
+    w.run_jobs().await;
+    assert_eq!(w.asked(), w.ids_of(&[0]));
+}
+
+#[tokio::test]
 async fn nothing_is_fetched_while_prefetch_is_off() {
     let w = world(|s| s.prefetch.enabled = false);
     w.save_queue("alice", 0);
@@ -302,6 +333,52 @@ async fn with_downloads_one_at_a_time_nothing_is_fetched_ahead() {
     w.run_jobs().await;
     assert!(w.asked().is_empty());
     assert_eq!(w.service.status().await.paused.as_deref(), Some(ONE_AT_A_TIME));
+}
+
+#[tokio::test]
+async fn startup_prefetch_bootstraps_serially_without_a_permanent_save() {
+    let w = world_with_proof(|s| s.prefetch.count = 4, None, false);
+    *w.downloads.gated.lock() = true;
+    w.save_queue("alice", 0);
+    w.service.on_playing("alice", &w.ids[0], None).await;
+    w.service.step().await;
+    until(|| w.downloads.now.load(Ordering::SeqCst) == 1).await;
+    w.service.step().await;
+    assert_eq!(w.downloads.most.load(Ordering::SeqCst), 1);
+    assert_eq!(w.concurrency.current(), 1);
+    assert!(!w.concurrency.destinations_proven());
+    assert!(w.state.download_history.get_recent(10).is_empty());
+    *w.downloads.gated.lock() = false;
+    w.downloads.open.notify_one();
+    until(|| w.service.state_running() == 0).await;
+    // The production transfer, not the prefetch scheduler, supplies this proof.
+    w.concurrency.prove();
+    assert_eq!(w.concurrency.current(), 3);
+    w.run_jobs().await;
+    assert!(w.service.status().await.ready > 0);
+}
+
+#[tokio::test]
+async fn startup_prefetch_does_not_override_a_refused_destination_or_serial_setting() {
+    for refused in [false, true] {
+        let w = world_with_proof(
+            |s| {
+                if !refused {
+                    s.soulseek.parallel_downloads = 1;
+                }
+            },
+            None,
+            false,
+        );
+        if refused {
+            w.concurrency.refuse("slskd ignored the destination");
+        }
+        w.save_queue("alice", 0);
+        w.service.on_playing("alice", &w.ids[0], None).await;
+        w.run_jobs().await;
+        assert!(w.asked().is_empty());
+        assert_eq!(w.service.status().await.paused.as_deref(), Some(ONE_AT_A_TIME));
+    }
 }
 
 #[tokio::test]

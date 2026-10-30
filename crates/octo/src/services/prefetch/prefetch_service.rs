@@ -3,8 +3,9 @@
 //! FLAC copies into the prefetch folder while nothing else is downloading, so they play lossless
 //! from their first second. A heart on one later keeps that file instead of downloading again.
 //!
-//! A download ahead runs only while Octo may download more than one song at a time, and always
-//! leaves one of those transfers free, so a heart never waits behind one. With DownloadOnPlay on,
+//! A download ahead normally leaves one transfer free for a heart. At startup one serial cache
+//! download may establish slskd's job-folder proof, avoiding a dependency on a permanent save.
+//! With DownloadOnPlay on,
 //! the coming songs are queued as the plays they will be instead, one at a time, each only while
 //! no real play is waiting.
 
@@ -247,6 +248,15 @@ impl PrefetchService {
         self.parts.settings.current().prefetch.clone()
     }
 
+    pub fn caches_on_play(&self, id: &str) -> bool {
+        let settings = self.settings();
+        settings.enabled
+            && settings.cache_on_play
+            && !self.parts.settings.current().subsonic.download_on_play
+            && (settings.scope == octo_core::settings::PrefetchScope::All
+                || self.parts.radio_queues.is_radio(id))
+    }
+
     fn now(&self) -> DateTime<Utc> {
         self.parts.clock.now()
     }
@@ -349,7 +359,7 @@ impl PrefetchService {
         };
         let lists = self.parts.radio_queues.snapshot();
         let radio = &self.parts.radio_queues;
-        let upcoming = window(
+        let mut upcoming = window(
             saved.as_ref(),
             &lists,
             (previous.as_deref(), id),
@@ -357,6 +367,10 @@ impl PrefetchService {
             settings.scope,
             |song| radio.is_radio(song),
         );
+        let cache_current = self.caches_on_play(id);
+        if cache_current {
+            upcoming.insert(0, id.to_string());
+        }
         let mut wanted: Vec<(String, String, String)> = Vec::new();
         for song in upcoming {
             let (outside, provider, external_id) = self.parts.library.parse_song_id(&song);
@@ -435,6 +449,12 @@ impl PrefetchService {
                     .position(|j| j.reason > Reason::Upcoming)
                     .unwrap_or(state.queued.len());
                 state.queued.insert(at, job);
+            }
+            if cache_current
+                && let Some(at) = state.queued.iter().position(|job| job.client_id == id)
+                && let Some(job) = state.queued.remove(at)
+            {
+                state.queued.push_front(job);
             }
         }
         self.wake.notify_one();
@@ -577,6 +597,16 @@ impl PrefetchService {
     /// How many downloads ahead may run now: never more than one fewer than the transfers Octo
     /// may run at once, so one is always free for a heart.
     fn room(&self, settings: &PrefetchSettings) -> usize {
+        if self
+            .parts
+            .concurrency
+            .as_ref()
+            .is_some_and(|c| c.can_bootstrap_prefetch())
+        {
+            // The shared transfer limiter remains at one until the real transfer proves
+            // its destination. Never assume job-folder isolation or enable parallelism here.
+            return settings.effective_at_once().min(1);
+        }
         let width = self
             .parts
             .concurrency

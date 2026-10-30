@@ -689,6 +689,8 @@ pub fn effective_document(state: &AppState, raw_config: bool) -> JsonObject {
             "Prefetch".into(),
             n_obj([
                 ("Enabled", Node::Bool(prefetch.enabled)),
+                ("CacheOnPlay", Node::Bool(prefetch.cache_on_play)),
+                ("OnPlayWaitSeconds", n_num(prefetch.on_play_wait_seconds)),
                 ("Scope", n_str(prefetch.scope.name())),
                 ("Count", n_num(prefetch.count)),
                 ("AtOnce", n_num(prefetch.at_once)),
@@ -1088,6 +1090,7 @@ pub fn validate_prefetch(
         ("KeepDays", 1, 365),
         ("MinFreeGb", 1, 500),
         ("KeepReadyCount", 1, 20),
+        ("OnPlayWaitSeconds", 0, 30),
     ] {
         if let Some(key) = key_of(patch, name)
             && let Some(value) = get_int(patch.get(&key))?

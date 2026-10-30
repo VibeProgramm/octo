@@ -35,6 +35,12 @@ pub struct PrefetchSettings {
     /// Whether upcoming songs are fetched ahead at all. PREFETCH_ENABLED.
     pub enabled: bool,
 
+    /// Fetch the currently played song into the temporary cache as well as upcoming songs.
+    pub cache_on_play: bool,
+
+    /// Maximum wait before starting the preview while the cache download continues (0 to 30).
+    pub on_play_wait_seconds: i32,
+
     /// Which upcoming songs: radio ones only, or every outside song. PREFETCH_SCOPE.
     pub scope: PrefetchScope,
 
@@ -74,6 +80,8 @@ impl Default for PrefetchSettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            cache_on_play: false,
+            on_play_wait_seconds: 10,
             scope: PrefetchScope::RadioOnly,
             count: 3,
             at_once: 1,
