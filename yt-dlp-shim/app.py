@@ -76,6 +76,13 @@ _AUDIO_FORMAT = os.environ.get(
     "140/bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",
 )
 
+# Explicit recording exclusions (e.g. a clean edit or a wrong recording). Empty by default.
+# Applied to discovery, persisted metadata, and direct access, not just the next search.
+_BLOCKED_VIDEO_IDS = frozenset(
+    value.strip() for value in os.environ.get("YTDLP_BLOCKED_VIDEO_IDS", "").split(",") if value.strip()
+)
+
+
 # The YouTube player client asked for stream URLs. yt-dlp's own clients hand out URLs that
 # googlevideo refuses until 4 to 14 s after the resolve (their `available_at`); the visionos
 # client's are ready as the resolve ends. Empty uses yt-dlp's own choice. When this client gives
@@ -324,6 +331,12 @@ log = logging.getLogger("ytdlp-shim")
 
 app = Flask(__name__)
 
+
+@app.before_request
+def reject_blocked_recording():
+    if request.path in ("/stream", "/download", "/facts") and request.args.get("id", "").strip() in _BLOCKED_VIDEO_IDS:
+        return jsonify(error="recording_excluded"), 410
+
 log.info(
     "gate: total=%d reserve=%d bg_capacity=%d",
     _GATE.total, _GATE.reserve, _GATE.total - _GATE.reserve,
@@ -437,7 +450,7 @@ def search():
     hint_str = request.args.get("duration", "").strip()
     duration_hint = int(hint_str) if hint_str.isdigit() else None
     bg = _is_bg()
-    skip = tuple(s for s in request.args.get("skip", "").split(",") if s)
+    skip = tuple(sorted({s for s in request.args.get("skip", "").split(",") if s} | _BLOCKED_VIDEO_IDS))
 
     resolve = request.args.get("resolve") != "0"
     # Rank-only background work neither reads nor fills the caches.
@@ -500,7 +513,7 @@ def _search_single(q: str, bg: bool = False) -> Optional[dict]:
     # YouTube's first hit is kept only when it names the song and is no other take; otherwise the
     # five are ranked.
     core, extra = _query_words(q)
-    if _rank_key(data, core, extra, _takes(q), None)[:3] != (0, 0, 0):
+    if data.get("id") in _BLOCKED_VIDEO_IDS or _rank_key(data, core, extra, _takes(q), None)[:3] != (0, 0, 0):
         return _search_with_hint(q, None, bg)
     payload = _payload_from(data)
     if payload.get("video_id") and stream_url:
@@ -660,7 +673,7 @@ def _search_with_hint(q: str, duration_hint: Optional[int], bg: bool = False, sk
             candidates.append(json.loads(ln))
         except json.JSONDecodeError:
             pass
-    candidates = [c for c in candidates if c.get("id") not in skip]
+    candidates = [c for c in candidates if c.get("id") not in skip and c.get("id") not in _BLOCKED_VIDEO_IDS]
     if not candidates:
         return {}
     # Ranked by the words they name, then other takes, then length; candidates without a duration
@@ -765,12 +778,12 @@ def meta():
     # Hot front: exact repeat within this process.
     with _META_CACHE_LOCK:
         c = _META_CACHE.get(key)
-        if c is not None:
+        if c is not None and c.get("video_id") not in _BLOCKED_VIDEO_IDS:
             _META_CACHE.move_to_end(key)
             return jsonify(**c, rank=_RANK)
     # Durable backing: resolved in a past search/warm, possibly a past process.
     persisted = _meta_db_get(key)
-    if persisted is not None:
+    if persisted is not None and persisted.get("video_id") not in _BLOCKED_VIDEO_IDS:
         with _META_CACHE_LOCK:
             _META_CACHE[key] = persisted
             _META_CACHE.move_to_end(key)
@@ -792,7 +805,7 @@ def meta():
         # YouTube's first hit is kept only when it names the song and is no other take; otherwise the
         # five are ranked.
         core, extra = _query_words(q)
-        if _rank_key(data, core, extra, _takes(q), None)[:3] != (0, 0, 0):
+        if data.get("id") in _BLOCKED_VIDEO_IDS or _rank_key(data, core, extra, _takes(q), None)[:3] != (0, 0, 0):
             data = None
     if data is None:
         out = _run([f"ytsearch5:{q}", "--flat-playlist", "--print", "%(.{id,title,duration,channel})j"],
@@ -805,6 +818,7 @@ def meta():
                     cands.append(json.loads(ln))
                 except json.JSONDecodeError:
                     pass
+        cands = [c for c in cands if c.get("id") not in _BLOCKED_VIDEO_IDS]
         if not cands:
             return jsonify(error="no_hit"), 404
         data = _rank_by_length(cands, q, duration_hint)[0]
@@ -821,6 +835,8 @@ def meta():
 
 
 def _resolve_url(video_id: str, bg: bool = False) -> Optional[str]:
+    if video_id in _BLOCKED_VIDEO_IDS:
+        return None
     cached = _url_cache_get(video_id)
     if cached:
         return cached
@@ -1235,7 +1251,7 @@ def ytm_search():
         return jsonify(error="ytm_failed"), 502
     if rows is None:
         return jsonify(error="busy"), 503
-    return jsonify(tracks=rows)
+    return jsonify(tracks=[row for row in rows if row.get("videoId") not in _BLOCKED_VIDEO_IDS])
 
 
 @app.get("/ytm/radio")
@@ -1251,7 +1267,7 @@ def ytm_radio():
         return jsonify(error="ytm_failed"), 502
     if rows is None:
         return jsonify(error="busy"), 503
-    return jsonify(tracks=rows)
+    return jsonify(tracks=[row for row in rows if row.get("videoId") not in _BLOCKED_VIDEO_IDS])
 
 
 @app.get("/ytm/artist-radio")
@@ -1268,7 +1284,7 @@ def ytm_artist_radio():
     if found is None:
         return jsonify(error="busy"), 503
     artist, rows = found
-    return jsonify(artist=artist, tracks=rows)
+    return jsonify(artist=artist, tracks=[row for row in rows if row.get("videoId") not in _BLOCKED_VIDEO_IDS])
 
 
 @app.get("/facts")
